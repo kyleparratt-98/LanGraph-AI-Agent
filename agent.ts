@@ -1,9 +1,15 @@
 // agent.ts
 
 // IMPORTANT - Add your API keys here. Be careful not to publish them.
-process.env.OPENAI_API_KEY =
-  "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";
-process.env.TAVILY_API_KEY = "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";
+import * as dotenv from "dotenv";
+dotenv.config();
+
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const TAVILY_API_KEY = process.env.TAVILY_API_KEY;
+
+if (!OPENAI_API_KEY || !TAVILY_API_KEY) {
+  throw new Error("Missing API keys. Please check your .env file.");
+}
 
 import { TavilySearchResults } from "@langchain/community/tools/tavily_search";
 import { ChatOpenAI } from "@langchain/openai";
