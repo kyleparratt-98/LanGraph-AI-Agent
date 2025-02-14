@@ -21,6 +21,7 @@ import {
 import { HumanMessage } from "@langchain/core/messages";
 import {
   generateProductManagerPrompt,
+  generateProductManagerReviewPrompt,
   generateTechnicalLeadPrompt,
 } from "./prompts";
 
@@ -28,9 +29,15 @@ import {
  # Class and Variable Definitions                                      #
  #####################################################################*/
 const developerOrchestratorModel = new ChatOpenAI({ temperature: 0 });
-const productManagerModelOne = new ChatOpenAI({ temperature: 0 });
-const productManagerModelTwo = new ChatOpenAI({ temperature: 0 });
-const productManagerModelThree = new ChatOpenAI({ temperature: 0 });
+const productManagerModelOne = new ChatOpenAI({
+  temperature: 0.8,
+});
+const productManagerModelTwo = new ChatOpenAI({
+  temperature: 1,
+});
+const productManagerModelThree = new ChatOpenAI({
+  temperature: 1,
+});
 const PRODUCT_MANAGER_ACTUAL = "product_manager_actual";
 const TECHNICAL_LEAD_ACTUAL = "technical_lead_actual";
 
@@ -39,46 +46,134 @@ const TECHNICAL_LEAD_ACTUAL = "technical_lead_actual";
  #####################################################################*/
 
 async function callProductManagerModel(state: typeof MessagesAnnotation.State) {
+  let adequate = false;
+  let attempt = 0;
   const userInput = state.messages[state.messages.length - 1];
+  let peerOneApproval = false;
+  let peerTwoApproval = false;
+  let peerFeedbackOne: string | undefined = undefined;
+  let peerFeedbackTwo: string | undefined = undefined;
+  let latestProductManagerResponse: string | undefined = undefined;
 
-  // First call to get the product manager 1's deliverables
-  const responseOne = await productManagerModelOne.invoke([
-    {
-      role: "assistant",
-      content: generateProductManagerPrompt(userInput.content as string),
-    },
-    userInput,
-  ]);
-  console.log("--------------------------------");
-  console.log("--------------------------------");
-  console.log("Product Manager 1's deliverables: ", responseOne.content);
+  while (!adequate) {
+    const productManagerPrompt = generateProductManagerPrompt(
+      userInput.content as string,
+      latestProductManagerResponse,
+      peerFeedbackOne,
+      peerFeedbackTwo
+    );
+    // Call to get the product manager 1's deliverables
+    const responseOne = await productManagerModelOne.invoke([
+      {
+        role: "assistant",
+        content: productManagerPrompt,
+      },
+      ...state.messages,
+    ]);
+    latestProductManagerResponse = responseOne.content as string;
 
-  // Second call to get the product manager 2's deliverables
-  const responseTwo = await productManagerModelTwo.invoke([
-    {
-      role: "assistant",
-      content: generateProductManagerPrompt(userInput.content as string),
-    },
-    userInput,
-  ]);
-  console.log("--------------------------------");
-  console.log("--------------------------------");
-  console.log("Product Manager 2's deliverables: ", responseTwo.content);
+    // Review by product manager 2
+    let reviewOne;
+    if (!peerOneApproval)
+      reviewOne = await productManagerModelTwo.invoke([
+        {
+          role: "assistant",
+          content: generateProductManagerReviewPrompt(
+            userInput.content as string,
+            productManagerPrompt,
+            responseOne.content as string
+          ).replace(/\n/g, " "),
+        },
+        userInput,
+      ]);
 
-  // Third call to get the product manager 3's deliverables
-  const responseThree = await productManagerModelThree.invoke([
-    {
-      role: "assistant",
-      content: generateProductManagerPrompt(userInput.content as string),
-    },
-    userInput,
-  ]);
+    // Review by product manager 3
+    let reviewTwo;
+    if (!peerTwoApproval)
+      reviewTwo = await productManagerModelThree.invoke([
+        {
+          role: "assistant",
+          content: generateProductManagerReviewPrompt(
+            userInput.content as string,
+            productManagerPrompt,
+            responseOne.content as string
+          ).replace(/\n/g, " "),
+        },
+        userInput,
+      ]);
 
-  console.log("--------------------------------");
-  console.log("--------------------------------");
-  console.log("Product Manager 3's deliverables: ", responseThree.content);
+    //Write the product manager's deliverables and the reviews to a file
+    const fs = require("fs");
+    const path = require("path");
+    const attemptFilePath = path.join(
+      __dirname,
+      "debug",
+      "attempt" + attempt + ".txt"
+    );
+    const attemptFileContent =
+      "product manager response:\n" +
+      latestProductManagerResponse +
+      "\n\n" +
+      "reviewer 1 response:\n" +
+      (peerOneApproval === false ? reviewOne.content : "approved") +
+      "\n\n" +
+      "reviewer 2 response:\n" +
+      (peerTwoApproval === false ? reviewTwo.content : "approved");
+    fs.writeFileSync(attemptFilePath, attemptFileContent);
 
-  return { messages: [responseOne] };
+    if (!peerOneApproval)
+      peerOneApproval = (reviewOne.content as string)
+        .toLowerCase()
+        .includes("[yes]");
+
+    if (!peerTwoApproval)
+      peerTwoApproval = (reviewTwo.content as string)
+        .toLowerCase()
+        .includes("[yes]");
+
+    if (peerOneApproval && peerTwoApproval) {
+      adequate = true;
+      console.log("--------------------------------");
+      console.log("success!", responseOne.content);
+      console.log("--------------------------------");
+      return { messages: [responseOne] };
+    } else {
+      attempt++;
+      if (peerOneApproval) {
+        peerFeedbackOne = undefined;
+      } else {
+        const lowPriorityOnly =
+          !(reviewOne.content as string).toLowerCase().includes("[medium]") &&
+          !(reviewOne.content as string).toLowerCase().includes("[high]");
+        if (lowPriorityOnly) {
+          peerFeedbackOne = undefined;
+        } else {
+          peerFeedbackOne = reviewOne.content as string;
+        }
+      }
+      if (peerTwoApproval) {
+        peerFeedbackTwo = undefined;
+      } else {
+        const lowPriorityOnly =
+          !(reviewTwo.content as string).toLowerCase().includes("[medium]") &&
+          !(reviewTwo.content as string).toLowerCase().includes("[high]");
+        if (lowPriorityOnly) {
+          peerFeedbackTwo = undefined;
+        } else {
+          peerFeedbackTwo = reviewTwo.content as string;
+        }
+      }
+
+      console.log(
+        `Attempt ${attempt}: Feedback suggests revisions are needed. [${peerOneApproval}, ${peerTwoApproval}]`
+      );
+      state.messages.push(
+        new HumanMessage(
+          "INCORPORATE THE FEEDBACK AND MAKE THE NECESSARY CHANGES. DO NOT FORGET TO INCORPORATE THE FEEDBACK."
+        )
+      );
+    }
+  }
 }
 
 async function callTechnicalLeadModel(state: typeof MessagesAnnotation.State) {
