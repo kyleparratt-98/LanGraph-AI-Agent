@@ -11,7 +11,6 @@ if (!OPENAI_API_KEY || !TAVILY_API_KEY) {
   throw new Error("Missing API keys. Please check your .env file.");
 }
 
-import { TavilySearchResults } from "@langchain/community/tools/tavily_search";
 import { ChatOpenAI } from "@langchain/openai";
 import {
   START,
@@ -19,18 +18,19 @@ import {
   MessagesAnnotation,
   StateGraph,
 } from "@langchain/langgraph";
-import { AIMessage, HumanMessage } from "@langchain/core/messages";
-import { createReactAgent, ToolNode } from "@langchain/langgraph/prebuilt";
-import { productManagerPrompt, technicalLeadPrompt } from "./prompts";
+import { HumanMessage } from "@langchain/core/messages";
+import {
+  generateProductManagerPrompt,
+  generateTechnicalLeadPrompt,
+} from "./prompts";
 
 /*#####################################################################
  # Class and Variable Definitions                                      #
  #####################################################################*/
-// Define the tools for the agent to use
-const agentTools = [new TavilySearchResults()];
-const toolNode = new ToolNode(agentTools);
 const developerOrchestratorModel = new ChatOpenAI({ temperature: 0 });
-const productManagerModel = new ChatOpenAI({ temperature: 0 });
+const productManagerModelOne = new ChatOpenAI({ temperature: 0 });
+const productManagerModelTwo = new ChatOpenAI({ temperature: 0 });
+const productManagerModelThree = new ChatOpenAI({ temperature: 0 });
 const PRODUCT_MANAGER_ACTUAL = "product_manager_actual";
 const TECHNICAL_LEAD_ACTUAL = "technical_lead_actual";
 
@@ -38,27 +38,61 @@ const TECHNICAL_LEAD_ACTUAL = "technical_lead_actual";
  # Helper Function Definitions                                        #
  #####################################################################*/
 
-// Function that calls the model
 async function callProductManagerModel(state: typeof MessagesAnnotation.State) {
-  const response = await productManagerModel.invoke([
-    { role: "system", content: productManagerPrompt },
-    ...state.messages,
-  ]);
-  console.log("callProductManagerModel has been called", response.content);
+  const userInput = state.messages[state.messages.length - 1];
 
-  // We return a list, because this will get added to the existing list
-  return { messages: [response] };
+  // First call to get the product manager 1's deliverables
+  const responseOne = await productManagerModelOne.invoke([
+    {
+      role: "assistant",
+      content: generateProductManagerPrompt(userInput.content as string),
+    },
+    userInput,
+  ]);
+  console.log("--------------------------------");
+  console.log("--------------------------------");
+  console.log("Product Manager 1's deliverables: ", responseOne.content);
+
+  // Second call to get the product manager 2's deliverables
+  const responseTwo = await productManagerModelTwo.invoke([
+    {
+      role: "assistant",
+      content: generateProductManagerPrompt(userInput.content as string),
+    },
+    userInput,
+  ]);
+  console.log("--------------------------------");
+  console.log("--------------------------------");
+  console.log("Product Manager 2's deliverables: ", responseTwo.content);
+
+  // Third call to get the product manager 3's deliverables
+  const responseThree = await productManagerModelThree.invoke([
+    {
+      role: "assistant",
+      content: generateProductManagerPrompt(userInput.content as string),
+    },
+    userInput,
+  ]);
+
+  console.log("--------------------------------");
+  console.log("--------------------------------");
+  console.log("Product Manager 3's deliverables: ", responseThree.content);
+
+  return { messages: [responseOne] };
 }
 
 async function callTechnicalLeadModel(state: typeof MessagesAnnotation.State) {
+  const productManagerDeliverables = state.messages[state.messages.length - 1];
   const response = await developerOrchestratorModel.invoke([
-    { role: "system", content: technicalLeadPrompt },
-    ...state.messages,
+    {
+      role: "assistant",
+      content: generateTechnicalLeadPrompt(
+        productManagerDeliverables.content as string
+      ),
+    },
+    productManagerDeliverables,
   ]);
-  console.log(
-    "callDeveloperOrchestratorModel has been called",
-    response.content
-  );
+  console.log("Technical Lead deliverables: ", response.content);
 
   return { messages: [response] };
 }
@@ -67,23 +101,24 @@ async function callTechnicalLeadModel(state: typeof MessagesAnnotation.State) {
  # Graph Definitions                                                  #
  #####################################################################*/
 
-// Define a new graph
 const workflow = new StateGraph(MessagesAnnotation)
+  // Add the product manager node and link to the start
   .addNode(PRODUCT_MANAGER_ACTUAL, callProductManagerModel)
-  .addEdge(START, PRODUCT_MANAGER_ACTUAL) // __start__ is a special name for the entrypoint
+  .addEdge(START, PRODUCT_MANAGER_ACTUAL)
 
+  // Add the technical lead node and link to the product manager
   .addNode(TECHNICAL_LEAD_ACTUAL, callTechnicalLeadModel)
   .addEdge(PRODUCT_MANAGER_ACTUAL, TECHNICAL_LEAD_ACTUAL)
-
+  // Link the technical lead to the end
   .addEdge(TECHNICAL_LEAD_ACTUAL, END);
 
-// Finally, we compile it into a LangChain Runnable.
+// Compile it into a LangChain Runnable.
 const app = workflow.compile();
 
 /*#####################################################################
  # Main Function Definitions                                           #
  #####################################################################*/
-// Use the agent
+
 async function main() {
   const readline = require("readline").createInterface({
     input: process.stdin,
